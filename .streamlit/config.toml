@@ -1,0 +1,18 @@
+# Conteúdo para o arquivo .streamlit/config.toml (Tema Verde Escuro)
+
+[theme]
+
+# Cor primária para elementos interativos. Um verde mais fechado e elegante.
+primaryColor="#2ECC71"
+
+# Cor do plano de fundo principal. Um cinza bem escuro, quase preto.
+backgroundColor="#0E1117"
+
+# Cor de fundo da barra lateral e outros elementos.
+secondaryBackgroundColor="#262730"
+
+# Cor do texto principal. Um branco suave para boa leitura no fundo escuro.
+textColor="#FAFAFA"
+
+# Fonte a ser usada.
+font="sans serif"
