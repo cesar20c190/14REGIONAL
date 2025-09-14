@@ -3,9 +3,19 @@ import database as db
 from datetime import datetime
 import pandas as pd
 import re
+from docx import Document
+from io import BytesIO
+import locale
+import os # Importa o módulo 'os' para lidar com caminhos de ficheiros
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Triagem e Consulta")
+
+# Define o local para português do Brasil para formatar a data por extenso
+try:
+    locale.setlocale(locale.LC_TIME, 'pt_BR.UTF-8')
+except locale.Error:
+    st.error("Local 'pt_BR.UTF-8' não encontrado. A data pode não ser formatada corretamente. Verifique a configuração do seu sistema.")
 
 st.title("📋 Triagem e Consulta de Demandas")
 st.markdown("Utilize as abas abaixo para registar uma nova demanda ou para consultar e editar registos existentes.")
@@ -14,10 +24,20 @@ st.divider()
 # --- FUNÇÕES AUXILIARES ---
 def formatar_cpf(cpf):
     """Remove caracteres não numéricos do CPF."""
-    return re.sub(r'[^0-9]', '', cpf)
+    if cpf:
+        return re.sub(r'[^0-9]', '', cpf)
+    return ""
+
+def formatar_cpf_para_exibicao(cpf_numerico):
+    """Formata um CPF numérico para o formato 000.000.000-00."""
+    if not cpf_numerico or len(str(cpf_numerico)) != 11:
+        return "" # Retorna uma string vazia se o CPF for None, vazio ou inválido
+    
+    cpf_str = str(cpf_numerico)
+    return f"{cpf_str[:3]}.{cpf_str[3:6]}.{cpf_str[6:9]}-{cpf_str[9:]}"
 
 # --- CRIAÇÃO DAS ABAS ---
-tab_registrar, tab_consultar, tab_gerar_documentos = st.tabs(["Registrar Nova Demanda", "Consultar e Editar Demandas", "Gerar Documentos"])
+tab_registrar, tab_consultar = st.tabs(["Registrar Nova Demanda", "Consultar e Editar Demandas"])
 
 # --- ABA DE REGISTRO ---
 with tab_registrar:
@@ -47,6 +67,8 @@ with tab_registrar:
         st.session_state.clear_form = False
     if 'num_processos' not in st.session_state:
         st.session_state.num_processos = 1
+    if 'demanda_desc' not in st.session_state:
+        st.session_state.demanda_desc = ""
 
     # --- LÓGICA DE LIMPEZA ---
     if st.session_state.get('clear_form', False):
@@ -55,6 +77,7 @@ with tab_registrar:
         st.session_state.nome_assistido = ""
         st.session_state.codigo = ""
         st.session_state.cpf = ""
+        st.session_state.demanda_desc = ""
         for i in range(st.session_state.get('num_processos_old', 1)):
             if f"processo_{i}" in st.session_state: st.session_state[f"processo_{i}"] = ""
         st.session_state.num_processos = 1
@@ -78,6 +101,18 @@ with tab_registrar:
             st.session_state[f"processo_{i}"] = st.session_state[f"processo_{i+1}"]
         del st.session_state[f"processo_{st.session_state.num_processos - 1}"]
         st.session_state.num_processos -= 1
+    
+    # --- MELHORIA: Função para buscar nome por CPF ---
+    def buscar_nome_por_cpf():
+        cpf_input = st.session_state.get('cpf', '')
+        cpf_formatado = formatar_cpf(cpf_input)
+        if len(cpf_formatado) == 11:
+            df = db.consultar_demandas()
+            if not df.empty and 'cpf' in df.columns:
+                assistido = df[df['cpf'] == cpf_formatado]
+                if not assistido.empty:
+                    nome_encontrado = assistido['nome_assistido'].iloc[0]
+                    st.session_state.nome_assistido = nome_encontrado
 
     # --- INTERFACE DE REGISTRO ---
     defensor_selecionado = st.selectbox(
@@ -118,9 +153,14 @@ with tab_registrar:
                 st.write("")
                 st.checkbox("Fixar", key="pin_servidor", value=st.session_state.pin_status['servidor'], on_change=update_pin_status, args=("servidor",))
 
-            st.text_input("Nome do Assistido", placeholder="Nome completo do assistido", key="nome_assistido")
-            st.text_input("CPF do Assistido", placeholder="000.000.000-00", key="cpf")
-            st.text_input("Código de Referência", placeholder="Ex: 12345-67.2024.8.05.0001", key="codigo")
+            # --- MELHORIA: Layout em colunas e preenchimento por CPF ---
+            col_nome, col_cpf, col_cod = st.columns([2,1,1])
+            with col_nome:
+                st.text_input("Nome do Assistido", placeholder="Nome completo do assistido", key="nome_assistido")
+            with col_cpf:
+                st.text_input("CPF do Assistido", placeholder="000.000.000-00", key="cpf", on_change=buscar_nome_por_cpf, help="Digite o CPF e tecle Enter para buscar o nome.")
+            with col_cod:
+                st.text_input("Código de Referência", placeholder="Ex: 12345-67", key="codigo")
             
             st.markdown("**Número do Processo(s)**")
             for i in range(st.session_state.num_processos):
@@ -133,14 +173,16 @@ with tab_registrar:
             st.divider()
 
             with st.form(f"form_submit", clear_on_submit=True):
-                demanda = st.text_area("Descrição da Demanda", height=150, placeholder="Descreva a demanda...", key="demanda_desc")
+                # --- CORREÇÃO: Utilizando st.multiselect para seleção de múltiplas categorias ---
                 selecao_demanda_list = []
                 if defensor_selecionado in DEFENSORES_COM_DEMANDAS_RAPIDAS:
-                    with st.expander("Seleção Rápida de Demanda (Opcional)"):
-                        cols_checkbox = st.columns(4)
-                        for j, demanda_rapida in enumerate(LISTA_DEMANDAS_RAPIDAS):
-                            if cols_checkbox[j % 4].checkbox(demanda_rapida, key=f"demanda_rapida_{j}"):
-                                selecao_demanda_list.append(demanda_rapida)
+                    selecao_demanda_list = st.multiselect(
+                        "Seleção Rápida de Demanda (Opcional)",
+                        options=LISTA_DEMANDAS_RAPIDAS,
+                        placeholder="Clique para selecionar uma ou mais demandas"
+                    )
+
+                demanda = st.text_area("Descrição da Demanda", height=150, placeholder="Descreva a demanda...", key="demanda_desc")
                 
                 submitted = st.form_submit_button("✔️ Guardar", use_container_width=True, type="primary")
 
@@ -149,13 +191,14 @@ with tab_registrar:
                     st.session_state.num_processos_old = st.session_state.num_processos
 
                     if not st.session_state.servidor or not st.session_state.nome_assistido or not st.session_state.codigo or not demanda:
-                        st.warning("Por favor, preencha todos os campos obrigatórios.")
+                        st.warning("Por favor, preencha todos os campos obrigatórios (Servidor, Nome, Código e Demanda).")
                     else:
                         st.session_state.form_data_to_save = {
                             "servidor": st.session_state.servidor, "defensor": defensor_selecionado, "nome_assistido": st.session_state.nome_assistido,
                             "cpf": formatar_cpf(st.session_state.cpf), "codigo": st.session_state.codigo, "demanda": demanda, 
-                            "selecao_demanda": ", ".join(selecao_demanda_list), "status": 'Pendente', "data": datetime.now().strftime("%d/%m/%Y"), 
-                            "horario": datetime.now().strftime("%H:%M:%S"), "numero_processo": ";".join(processos)
+                            "selecao_demanda": "; ".join(selecao_demanda_list), "status": 'Pendente', "data": datetime.now().strftime("%d/%m/%Y"), 
+                            "horario": datetime.now().strftime("%H:%M:%S"), "numero_processo": ";".join(processos),
+                            "documento_gerado": ""
                         }
                         st.session_state.awaiting_confirmation = True
                         st.rerun()
@@ -164,72 +207,209 @@ with tab_registrar:
 with tab_consultar:
     st.subheader("🔍 Ferramenta de Busca e Edição")
 
-    # --- Filtros ---
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        filtro_nome = st.text_input("Buscar por Nome do Assistido")
-    with col2:
-        filtro_cpf = st.text_input("Buscar por CPF")
-    with col3:
-        filtro_defensor = st.selectbox("Filtrar por Defensor", options=["Todos"] + LISTA_DEFENSORES, key="consulta_defensor")
+    if 'doc_generator_open_for' not in st.session_state:
+        st.session_state.doc_generator_open_for = None
 
-    # --- Carregar e Filtrar Dados ---
     df_original = db.consultar_demandas()
-    df_filtrado = df_original.copy()
 
-    if filtro_nome:
-        df_filtrado = df_filtrado[df_filtrado['nome_assistido'].str.contains(filtro_nome, case=False, na=False)]
-    if filtro_cpf:
-        df_filtrado = df_filtrado[df_filtrado['cpf'].str.contains(formatar_cpf(filtro_cpf), case=False, na=False)]
-    if filtro_defensor != "Todos":
-        df_filtrado = df_filtrado[df_filtrado['defensor'] == filtro_defensor]
+    # --- MELHORIA: Lógica de "mudar de tela" para geração de documentos ---
+    if st.session_state.doc_generator_open_for is not None:
+        id_demanda = st.session_state.doc_generator_open_for
+        demanda_selecionada = df_original[df_original['id'] == id_demanda].iloc[0]
 
-    if df_filtrado.empty:
-        st.info("Nenhum registo encontrado com os filtros aplicados.")
-    else:
-        # --- Editor de Dados ---
-        st.info(f"{len(df_filtrado)} registo(s) encontrado(s). Pode editar os dados diretamente na tabela abaixo.")
-        
-        # Garante que o 'id' não seja editável
-        df_filtrado.set_index('id', inplace=True)
-        
-        df_editado = st.data_editor(df_filtrado, use_container_width=True)
+        st.subheader(f"📄 Gerar Documento para: {demanda_selecionada['nome_assistido']}")
+        st.caption(f"Registo ID: {id_demanda}")
 
-        # --- Lógica para Salvar Alterações ---
-        if st.button("💾 Salvar Alterações", type="primary"):
-            alteracoes_count = 0
-            for demanda_id, linha in df_editado.iterrows():
-                linha_original = df_filtrado.loc[demanda_id]
-                if not linha.equals(linha_original):
-                    novos_dados = linha.to_dict()
-                    # Formata o CPF caso tenha sido alterado
-                    if 'cpf' in novos_dados and novos_dados['cpf']:
-                        novos_dados['cpf'] = formatar_cpf(novos_dados['cpf'])
-                    db.atualizar_demanda(demanda_id, novos_dados)
-                    alteracoes_count += 1
+        if st.button("⬅️ Voltar à Consulta"):
+            st.session_state.doc_generator_open_for = None
+            st.rerun()
+
+        st.markdown("---")
+        tipo_documento = st.selectbox(
+            "Tipo de documento:",
+            options=["Declaração de comparecimento", "Solicitação de Certidão (CRC)", "Declaração de residência", "Carta convite"],
+            index=None, placeholder="Selecione uma opção", key=f"doc_type_{id_demanda}"
+        )
+
+        if tipo_documento == "Declaração de comparecimento":
+            st.markdown("---")
+            st.warning("Atenção: O seu ficheiro modelo .docx deve conter as tags <<horadeinicio>> e <<horafim>>.")
             
-            if alteracoes_count > 0:
-                st.toast(f"{alteracoes_count} registo(s) atualizado(s) com sucesso!", icon="🎉")
-                st.rerun()
-            else:
-                st.toast("Nenhuma alteração detetada para salvar.", icon="ℹ️")
+            defensor_assinatura = st.text_input("Nome do Defensor(a) para Assinatura", value=demanda_selecionada['defensor'], key=f"defensor_assinatura_{id_demanda}")
+            
+            col_hora1, col_hora2 = st.columns(2)
+            with col_hora1:
+                hora_inicio = st.time_input("Hora de início do atendimento", key=f"hinicio_{id_demanda}")
+            with col_hora2:
+                hora_fim = st.time_input("Hora de fim do atendimento", key=f"hfim_{id_demanda}")
 
-# --- ABA GERAR DOCUMENTOS ---
-with tab_gerar_documentos:
-    st.subheader("📄 Gerador de Documentos")
-    
-    tipo_documento = st.selectbox(
-        "Selecione o tipo de documento que deseja gerar:",
-        options=[
-            "Declaração de comparecimento",
-            "Declaração de residência",
-            "Carta convite"
-        ],
-        index=None,
-        placeholder="Selecione uma opção"
-    )
+            if st.button("Gerar e Salvar Documento", key=f"gerar_dec_comp_{id_demanda}", type="primary"):
+                if not hora_inicio or not hora_fim or len(defensor_assinatura.strip()) < 3:
+                    st.warning("Por favor, preencha todos os campos (horas e nome do defensor com pelo menos 3 caracteres).")
+                else:
+                    try:
+                        caminho_modelo = os.path.join('modelos', 'ADM - DECLARAÇÃO DE COMPARECIMENTO.docx')
+                        doc = Document(caminho_modelo)
+                        data_extenso = datetime.now().strftime("%d de %B de %Y")
+                        qualificacao_auto = f"CPF/MF: {formatar_cpf_para_exibicao(demanda_selecionada.get('cpf'))}"
 
-    if tipo_documento:
-        st.write(f"Você selecionou: **{tipo_documento}**")
-        st.info("O próximo passo será criar os formulários e a lógica para gerar este documento.")
+                        substituicoes = {
+                            "<<NOME PARA ATESTADO DE COMPARECIMENTO>>": demanda_selecionada['nome_assistido'],
+                            "<<qualificação>>": qualificacao_auto,
+                            "<<dataatendimento>>": data_extenso,
+                            "<<COMARCA>>": "Teixeira de Freitas",
+                            "<<nomedefensor>>": defensor_assinatura,
+                            "<<horadeinicio>>": hora_inicio.strftime("%H:%M"),
+                            "<<horafim>>": hora_fim.strftime("%H:%M")
+                        }
+
+                        for p in doc.paragraphs:
+                            texto_paragrafo = p.text
+                            for key, value in substituicoes.items():
+                                texto_paragrafo = texto_paragrafo.replace(key, str(value))
+                            if p.text != texto_paragrafo:
+                                p.clear()
+                                p.add_run(texto_paragrafo)
+
+                        bio = BytesIO()
+                        doc.save(bio)
+                        
+                        st.download_button(
+                            label="✔️ Documento Pronto! Clique para Descarregar.",
+                            data=bio.getvalue(),
+                            file_name=f"Declaracao_Comparecimento_{demanda_selecionada['nome_assistido']}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True
+                        )
+                        
+                        db.atualizar_demanda(id_demanda, {"documento_gerado": tipo_documento})
+                        st.toast("Documento gerado e registo atualizado!", icon="📄")
+
+                    except FileNotFoundError:
+                        st.error("Erro: O ficheiro modelo 'ADM - DECLARAÇÃO DE COMPARECIMENTO.docx' não foi encontrado.")
+                    except Exception as e:
+                        st.error(f"Ocorreu um erro ao gerar o documento: {e}")
+        
+        elif tipo_documento == "Solicitação de Certidão (CRC)":
+            st.markdown("---")
+            st.info(f"""
+            **Assistido(a):** {demanda_selecionada['nome_assistido']}  
+            **CPF:** {formatar_cpf_para_exibicao(demanda_selecionada.get('cpf'))}
+            """)
+
+            tipo_certidao = st.selectbox("Tipo de Certidão", options=["Nascimento", "Casamento", "Óbito"], key=f"tipo_certidao_{id_demanda}")
+            
+            dados_certidao = {}
+            if tipo_certidao == "Nascimento":
+                dados_certidao['crc_nome_registrado'] = st.text_input("Nome Completo do Registrado(a)", value=demanda_selecionada['nome_assistido'], key=f"crc_nome_nasc_{id_demanda}")
+                dados_certidao['crc_data_nascimento'] = st.date_input("Data de Nascimento", key=f"crc_data_nasc_{id_demanda}", format="DD/MM/YYYY", value=None)
+                dados_certidao['crc_local_nascimento'] = st.text_input("Cidade de Nascimento", key=f"crc_local_nasc_{id_demanda}")
+                dados_certidao['crc_nome_pai'] = st.text_input("Nome do Pai", key=f"crc_pai_{id_demanda}")
+                dados_certidao['crc_nome_mae'] = st.text_input("Nome da Mãe", key=f"crc_mae_{id_demanda}")
+
+            elif tipo_certidao == "Casamento":
+                dados_certidao['crc_nome_registrado'] = st.text_input("Nome do(a) Cônjuge 1", value=demanda_selecionada['nome_assistido'], key=f"crc_nome_cas1_{id_demanda}")
+                dados_certidao['crc_nome_conjuge2'] = st.text_input("Nome do(a) Cônjuge 2", key=f"crc_nome_cas2_{id_demanda}")
+                dados_certidao['crc_data_casamento'] = st.date_input("Data do Casamento", key=f"crc_data_cas_{id_demanda}", format="DD/MM/YYYY", value=None)
+                dados_certidao['crc_local_casamento'] = st.text_input("Cidade do Casamento", key=f"crc_local_cas_{id_demanda}")
+
+            elif tipo_certidao == "Óbito":
+                dados_certidao['crc_nome_registrado'] = st.text_input("Nome Completo do(a) Falecido(a)", value=demanda_selecionada['nome_assistido'], key=f"crc_nome_obito_{id_demanda}")
+                dados_certidao['crc_data_obito'] = st.date_input("Data do Óbito", key=f"crc_data_obito_{id_demanda}", format="DD/MM/YYYY", value=None)
+                dados_certidao['crc_local_obito'] = st.text_input("Cidade do Óbito", key=f"crc_local_obito_{id_demanda}")
+                dados_certidao['crc_filiacao_obito'] = st.text_input("Filiação do(a) Falecido(a)", key=f"crc_filiacao_obito_{id_demanda}")
+
+            dados_certidao['crc_cartorio'] = st.text_input("Cartório de Registro (se souber)", key=f"crc_cartorio_{id_demanda}")
+            dados_certidao['crc_finalidade'] = st.text_input("Finalidade da Certidão", value="Para fins de prova em processo judicial", key=f"crc_finalidade_{id_demanda}")
+            
+            if st.button("✔️ Enviar Solicitação para Coordenação", key=f"enviar_crc_{id_demanda}", type="primary", use_container_width=True):
+                try:
+                    # Preparar os dados para salvar no banco de dados
+                    dados_para_salvar = {
+                        "documento_gerado": f"Solicitação de {tipo_certidao} Enviada",
+                        "crc_tipo_certidao": tipo_certidao,
+                        "crc_status": "Pendente" # Adiciona o novo status
+                    }
+
+                    # Adiciona os dados específicos do formulário ao dicionário
+                    for key, value in dados_certidao.items():
+                        if isinstance(value, datetime):
+                            dados_para_salvar[key] = value.strftime('%d/%m/%Y')
+                        else:
+                            dados_para_salvar[key] = value
+                    
+                    # Atualiza o registo no banco de dados
+                    db.atualizar_demanda(id_demanda, dados_para_salvar)
+                    st.toast("Solicitação enviada para a coordenação!", icon="🚀")
+                    
+                    # Opcional: fechar a tela de geração após o envio
+                    st.session_state.doc_generator_open_for = None
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Ocorreu um erro ao enviar a solicitação: {e}")
+
+    else:
+        # --- Interface Principal da Consulta ---
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            filtro_nome = st.text_input("Buscar por Nome do Assistido")
+        with col2:
+            filtro_cpf = st.text_input("Buscar por CPF")
+        with col3:
+            filtro_defensor = st.selectbox("Filtrar por Defensor", options=["Todos"] + LISTA_DEFENSORES, key="consulta_defensor")
+
+        df_filtrado = df_original.copy()
+
+        if filtro_nome:
+            df_filtrado = df_filtrado[df_filtrado['nome_assistido'].str.contains(filtro_nome, case=False, na=False)]
+        if filtro_cpf:
+            df_filtrado = df_filtrado[df_filtrado['cpf'].str.contains(formatar_cpf(filtro_cpf), case=False, na=False)]
+        if filtro_defensor != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['defensor'] == filtro_defensor]
+
+        if df_filtrado.empty:
+            st.info("Nenhum registo encontrado com os filtros aplicados.")
+        else:
+            st.info(f"{len(df_filtrado)} registo(s) encontrado(s). Clique num registo para ver os detalhes, editar ou gerar documentos.")
+            
+            for index, row in df_filtrado.iterrows():
+                id_demanda = row['id']
+                status_color = "green" if row['status'] == 'Pendente' else 'orange'
+                doc_icon = "📄" if row.get('documento_gerado') else ""
+                
+                with st.expander(f"{doc_icon} **{row['nome_assistido']}** |  Data: {row['data']}  |  Status: :{status_color}[{row['status']}]"):
+                    
+                    with st.form(key=f"form_edit_{id_demanda}"):
+                        st.subheader(f"Editando Registo ID: {id_demanda}")
+                        dados_editados = {}
+                        
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            dados_editados['nome_assistido'] = st.text_input("Nome", value=row['nome_assistido'], key=f"nome_{id_demanda}")
+                            dados_editados['cpf'] = st.text_input("CPF", value=row.get('cpf', ''), key=f"cpf_{id_demanda}")
+                            dados_editados['servidor'] = st.selectbox("Servidor", options=LISTA_SERVIDORES, index=LISTA_SERVIDORES.index(row['servidor']) if row['servidor'] in LISTA_SERVIDORES else 0, key=f"servidor_{id_demanda}")
+                        with c2:
+                            dados_editados['codigo'] = st.text_input("Código de Referência", value=row['codigo'], key=f"codigo_{id_demanda}")
+                            dados_editados['defensor'] = st.selectbox("Defensor", options=LISTA_DEFENSORES, index=LISTA_DEFENSORES.index(row['defensor']) if row['defensor'] in LISTA_DEFENSORES else 0, key=f"defensor_{id_demanda}")
+                            dados_editados['status'] = st.selectbox("Status", options=['Pendente', 'Lido', 'Resolvido', 'Arquivado'], index=['Pendente', 'Lido', 'Resolvido', 'Arquivado'].index(row['status']) if row['status'] in ['Pendente', 'Lido', 'Resolvido', 'Arquivado'] else 0, key=f"status_{id_demanda}")
+
+                        dados_editados['numero_processo'] = st.text_input("Nº Processo", value=row.get('numero_processo', ''), help="Separar múltiplos com (;)", key=f"processo_{id_demanda}")
+                        dados_editados['demanda'] = st.text_area("Descrição da Demanda", value=row['demanda'], height=150, key=f"demanda_{id_demanda}")
+                        dados_editados['documento_gerado'] = st.text_input("Documento Gerado", value=row.get('documento_gerado', ''), key=f"doc_gerado_{id_demanda}")
+
+                        col_btn1, col_btn2 = st.columns(2)
+                        with col_btn1:
+                           if st.form_submit_button("💾 Salvar Alterações", type="primary", use_container_width=True):
+                                try:
+                                    dados_editados['cpf'] = formatar_cpf(dados_editados['cpf'])
+                                    db.atualizar_demanda(id_demanda, dados_editados)
+                                    st.toast(f"Registo de {dados_editados['nome_assistido']} atualizado!", icon="🎉")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Erro ao atualizar o registo: {e}")
+                        with col_btn2:
+                            if st.form_submit_button("📄 Gerar/Enviar Solicitação", use_container_width=True):
+                                st.session_state.doc_generator_open_for = id_demanda
+                                st.rerun()
 

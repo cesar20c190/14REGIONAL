@@ -27,18 +27,32 @@ def inicializar_banco():
             status TEXT NOT NULL,
             data TEXT NOT NULL,
             horario TEXT NOT NULL,
-            numero_processo TEXT 
+            numero_processo TEXT,
+            documento_gerado TEXT 
         )
     """)
     
-    # --- Verificações de colunas para compatibilidade com versões antigas ---
+    # --- Verificações de colunas para compatibilidade ---
     cursor.execute("PRAGMA table_info(demandas)")
     columns = [info[1] for info in cursor.fetchall()]
     
-    if 'numero_processo' not in columns:
-        cursor.execute("ALTER TABLE demandas ADD COLUMN numero_processo TEXT")
-    if 'cpf' not in columns:
-        cursor.execute("ALTER TABLE demandas ADD COLUMN cpf TEXT")
+    # Adiciona colunas se não existirem
+    colunas_a_adicionar = {
+        'numero_processo': 'TEXT', 'cpf': 'TEXT', 'documento_gerado': 'TEXT',
+        # Novas colunas para dados do CRC
+        'crc_tipo_certidao': 'TEXT', 'crc_nome_registrado': 'TEXT',
+        'crc_data_nascimento': 'TEXT', 'crc_local_nascimento': 'TEXT',
+        'crc_nome_pai': 'TEXT', 'crc_nome_mae': 'TEXT',
+        'crc_nome_conjuge2': 'TEXT', 'crc_data_casamento': 'TEXT',
+        'crc_local_casamento': 'TEXT', 'crc_data_obito': 'TEXT',
+        'crc_local_obito': 'TEXT', 'crc_filiacao_obito': 'TEXT',
+        'crc_cartorio': 'TEXT', 'crc_finalidade': 'TEXT',
+        'crc_status': 'TEXT'
+    }
+
+    for col, tipo in colunas_a_adicionar.items():
+        if col not in columns:
+            cursor.execute(f"ALTER TABLE demandas ADD COLUMN {col} {tipo}")
 
     conn.commit()
     conn.close()
