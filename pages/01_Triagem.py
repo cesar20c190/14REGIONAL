@@ -11,12 +11,6 @@ import os # Importa o módulo 'os' para lidar com caminhos de ficheiros
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Triagem e Consulta")
 
-# Define o local para português do Brasil para formatar a data por extenso
-try:
-    locale.setlocale(locale.LC_TIME, 'pt_BR.UTF-8')
-except locale.Error:
-    st.error("Local 'pt_BR.UTF-8' não encontrado. A data pode não ser formatada corretamente. Verifique a configuração do seu sistema.")
-
 st.title("📋 Triagem e Consulta de Demandas")
 st.markdown("Utilize as abas abaixo para registar uma nova demanda ou para consultar e editar registos existentes.")
 st.divider()
@@ -35,6 +29,15 @@ def formatar_cpf_para_exibicao(cpf_numerico):
     
     cpf_str = str(cpf_numerico)
     return f"{cpf_str[:3]}.{cpf_str[3:6]}.{cpf_str[6:9]}-{cpf_str[9:]}"
+
+def formatar_data_para_extenso(dt):
+    """Formata uma data para o formato 'dd de Mês de yyyy' em português, evitando problemas de 'locale'."""
+    meses = {
+        1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril",
+        5: "maio", 6: "junho", 7: "julho", 8: "agosto",
+        9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro"
+    }
+    return f"{dt.day} de {meses[dt.month]} de {dt.year}"
 
 # --- CRIAÇÃO DAS ABAS ---
 tab_registrar, tab_consultar = st.tabs(["Registrar Nova Demanda", "Consultar e Editar Demandas"])
@@ -102,7 +105,6 @@ with tab_registrar:
         del st.session_state[f"processo_{st.session_state.num_processos - 1}"]
         st.session_state.num_processos -= 1
     
-    # --- MELHORIA: Função para buscar nome por CPF ---
     def buscar_nome_por_cpf():
         cpf_input = st.session_state.get('cpf', '')
         cpf_formatado = formatar_cpf(cpf_input)
@@ -153,7 +155,6 @@ with tab_registrar:
                 st.write("")
                 st.checkbox("Fixar", key="pin_servidor", value=st.session_state.pin_status['servidor'], on_change=update_pin_status, args=("servidor",))
 
-            # --- MELHORIA: Layout em colunas e preenchimento por CPF ---
             col_nome, col_cpf, col_cod = st.columns([2,1,1])
             with col_nome:
                 st.text_input("Nome do Assistido", placeholder="Nome completo do assistido", key="nome_assistido")
@@ -173,7 +174,6 @@ with tab_registrar:
             st.divider()
 
             with st.form(f"form_submit", clear_on_submit=True):
-                # --- CORREÇÃO: Utilizando st.multiselect para seleção de múltiplas categorias ---
                 selecao_demanda_list = []
                 if defensor_selecionado in DEFENSORES_COM_DEMANDAS_RAPIDAS:
                     selecao_demanda_list = st.multiselect(
@@ -212,7 +212,6 @@ with tab_consultar:
 
     df_original = db.consultar_demandas()
 
-    # --- MELHORIA: Lógica de "mudar de tela" para geração de documentos ---
     if st.session_state.doc_generator_open_for is not None:
         id_demanda = st.session_state.doc_generator_open_for
         demanda_selecionada = df_original[df_original['id'] == id_demanda].iloc[0]
@@ -250,7 +249,7 @@ with tab_consultar:
                     try:
                         caminho_modelo = os.path.join('modelos', 'ADM - DECLARAÇÃO DE COMPARECIMENTO.docx')
                         doc = Document(caminho_modelo)
-                        data_extenso = datetime.now().strftime("%d de %B de %Y")
+                        data_extenso = formatar_data_para_extenso(datetime.now()) # <-- MUDANÇA AQUI
                         qualificacao_auto = f"CPF/MF: {formatar_cpf_para_exibicao(demanda_selecionada.get('cpf'))}"
 
                         substituicoes = {
@@ -324,25 +323,21 @@ with tab_consultar:
             
             if st.button("✔️ Enviar Solicitação para Coordenação", key=f"enviar_crc_{id_demanda}", type="primary", use_container_width=True):
                 try:
-                    # Preparar os dados para salvar no banco de dados
                     dados_para_salvar = {
                         "documento_gerado": f"Solicitação de {tipo_certidao} Enviada",
                         "crc_tipo_certidao": tipo_certidao,
-                        "crc_status": "Pendente" # Adiciona o novo status
+                        "crc_status": "Pendente"
                     }
 
-                    # Adiciona os dados específicos do formulário ao dicionário
                     for key, value in dados_certidao.items():
                         if isinstance(value, datetime):
                             dados_para_salvar[key] = value.strftime('%d/%m/%Y')
                         else:
                             dados_para_salvar[key] = value
                     
-                    # Atualiza o registo no banco de dados
                     db.atualizar_demanda(id_demanda, dados_para_salvar)
                     st.toast("Solicitação enviada para a coordenação!", icon="🚀")
                     
-                    # Opcional: fechar a tela de geração após o envio
                     st.session_state.doc_generator_open_for = None
                     st.rerun()
 
@@ -350,7 +345,6 @@ with tab_consultar:
                     st.error(f"Ocorreu um erro ao enviar a solicitação: {e}")
 
     else:
-        # --- Interface Principal da Consulta ---
         col1, col2, col3 = st.columns(3)
         with col1:
             filtro_nome = st.text_input("Buscar por Nome do Assistido")
