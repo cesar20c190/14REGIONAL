@@ -663,3 +663,4 @@ with tab_consultar_analises:
         st.error(f"Ocorreu um erro ao consultar as análises salvas: {e}")
         st.warning("Verifique se a função `consultar_analises` existe e está configurada corretamente no seu ficheiro `database.py`.")
 
+#testee
